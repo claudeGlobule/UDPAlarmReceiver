@@ -1,0 +1,417 @@
+#define debug 0
+
+#include <SPI.h>
+#include <Ethernet.h>
+#include <HttpClient.h>
+#include <Xively.h>
+#include <EthernetUdp.h>
+#include <Dns.h>
+
+#define LATCH 8
+#define CLOCK 9
+#define DATA 2
+
+
+void(* resetFunc) (void) = 0;
+
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+
+unsigned int localPort = 8888;      // local port to listen for UDP packets
+IPAddress timeServer(132, 163, 4, 101); // time-a.timefreq.bldrdoc.gov NTP server
+
+IPAddress udpServer(0, 0, 0, 0); // UDP server
+
+IPAddress udpReceiver(0, 0, 0, 0); // UDP server
+boolean receiverStatus = false;
+
+IPAddress ip(192, 168, 1, 177); // local IP arduino
+unsigned int remPort = 9876;
+
+const int NTP_PACKET_SIZE= 48; // NTP time stamp is in the first 48 bytes of the message
+byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets 
+EthernetUDP Udp;
+DNSClient dnsClient;
+unsigned long epoch;
+
+int year;
+int month;
+int day;
+int monthDays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+long epoch2012 = 1325372400;
+
+char HHMMSS[9] = { ' ',' ',':',' ',' ',':',' ',' ','\0'};
+char tmp[2];
+
+long lastUpdate;
+
+char cosmKeyAlarm[] = "pzNZGxAY3xJYNanqcbWp7wJaejGSAKxSVXdpZlY4WjNYOD0g";
+char cosmKeyLog[] = "TWFx152S_e_lw2_fxKWQWLPyft6SAKxkcVdNMzltSW9lWT0g";
+
+char alarmId[] = "hits_alarm";
+char logId[] = "hits_log";
+
+XivelyDatastream datastreamsAlarm[] = {
+  XivelyDatastream(alarmId, strlen(alarmId), DATASTREAM_FLOAT),
+};
+XivelyDatastream datastreamsLog[] = {
+  XivelyDatastream(logId, strlen(logId), DATASTREAM_FLOAT),
+};
+
+XivelyFeed feedAlarm(126244, datastreamsAlarm, 1);
+XivelyFeed feedLog(126243, datastreamsLog, 1);
+
+EthernetClient client;
+XivelyClient cosmclient(client);
+
+struct Alarme {
+short type;
+#define FLOOD_TYPE 2
+#define LIGHT_TYPE 1
+#define SIREN_TYPE 3
+#define START_TYPE 4
+long start;
+long hit;
+short flag;
+#define TO_SEND 0
+#define SENT 1
+};
+volatile Alarme alarmes[16] = {
+  {FLOOD_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {SIREN_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {LIGHT_TYPE,0,0,SENT},
+  {START_TYPE,0,0,SENT}};
+
+volatile unsigned int adresse;
+volatile unsigned int day_no;
+volatile long last_push;
+volatile long start_ligth;
+volatile long lastCheck;
+volatile long lastAck;
+volatile long lastDisplay;
+volatile long count;
+
+// Définition des segments à allumer pour
+// afficher les chiffres de 0 à 9
+
+const byte ledCharSet[10] = {
+  B00111111,B00000110,B01011011,
+  B01001111,B01100110,B01101101,
+  B01111101,B00000111,B01111111,B01101111
+};
+
+void setup() {
+// initialisation output display 7-segment
+    pinMode(LATCH, OUTPUT);
+    pinMode(CLOCK, OUTPUT);
+    pinMode(DATA,OUTPUT);
+    displayLED(B01001001);
+  #if debug == 1 
+  Serial.begin(9600);
+  Serial.println("0;Starting Arduino for alarms");
+  #endif
+  Ethernet.begin(mac,ip);
+  delay(1000);
+  resetHour();
+// Initialisation input alarmes
+    pinMode(3, INPUT); //interrupt alarmes
+    pinMode(4,INPUT); // adresse alarmes
+    pinMode(5,INPUT); // adresse alarmes
+    pinMode(6,INPUT); // adresse alarmes
+    pinMode(7,INPUT); // adresse alarmes
+    count=1;
+    alarmes[15].flag = TO_SEND;
+    attachInterrupt(1,interruption,CHANGE); // 1 -> interrupt sur PIN 3
+    delay(1000);
+    lastCheck=millis();
+}
+
+void loop() {
+    int packetSize = Udp.parsePacket();
+    if(packetSize){
+      udpReceiver = Udp.remoteIP();
+      remPort = Udp.remotePort();
+      receiverStatus = true;
+      alarmes[15].flag = TO_SEND;
+      #if debug == 1
+      Serial.print(" IP = "); Serial.print(udpReceiver[0]); Serial.print(udpReceiver[1]); Serial.print(udpReceiver[2]);
+      Serial.print(udpReceiver[3]); Serial.print(" Port = "); Serial.println(remPort);
+      #endif      
+    }
+    for(int i = 0 ; i < 16 ; i++ ) {
+      if(alarmes[i].flag == TO_SEND){
+        epoch = epoch + (millis()-lastUpdate)/1000;
+        lastUpdate = millis();
+        day_no = (epoch/86400L + 4)%7;
+        maj_heure();
+        int rcode = -1;
+        switch(alarmes[i].type){
+		case  LIGHT_TYPE :
+                      rcode = level_ligth_alarm(i,1);
+                      break;
+		case  FLOOD_TYPE :
+                      rcode = is_flood_alarm(i,2);
+                      break;
+		case  SIREN_TYPE :
+                      rcode = is_flood_alarm(i,3);
+                      break;
+		case  START_TYPE :
+                      rcode = hits_alarms_log(i,0);
+                      break;
+        }
+        if(rcode != 0)break;
+        alarmes[i].flag = SENT;
+      }
+    }
+    #if debug == 1
+    if( millis() - lastAck > 5000  ) {
+        lastAck = millis();
+        Serial.print("1;");Serial.print(count);Serial.println(";");
+        count++;
+    }
+    #endif
+/*    if( millis() - lastDisplay > 30000  ) {
+       lastDisplay = 0;
+       displayLED(B00001000); 
+    }*/
+//    if( millis()  - lastCheck > 3600000  ) {
+    if( millis()  - lastCheck > 3600000  ) {
+       okResetFunc();         
+       epoch = epoch + (millis()-lastUpdate)/1000;
+       lastUpdate = millis();
+       lastCheck = lastUpdate;
+    }
+    delay(100);
+}
+
+void interruption() {
+    noInterrupts();
+    int etat = digitalRead(3);
+    if( etat != LOW){
+      adresse =   (digitalRead (7) << 3) |
+                  (digitalRead (6) << 2) |
+                  (digitalRead (5) << 1) |
+                  digitalRead (4);
+      if(alarmes[adresse].flag = SENT)alarmes[adresse].flag = TO_SEND;
+    }
+    interrupts();
+}
+
+unsigned long sendNTPpacket(IPAddress& address){
+    memset(packetBuffer, 0, NTP_PACKET_SIZE); 
+    packetBuffer[0] = 0b11100011;
+    packetBuffer[1] = 0;
+    packetBuffer[2] = 6; 
+    packetBuffer[3] = 0xEC;
+    packetBuffer[12]  = 49; 
+    packetBuffer[13]  = 0x4E;
+    packetBuffer[14]  = 49;
+    packetBuffer[15]  = 52;
+    Udp.beginPacket(address, 123);
+    Udp.write(packetBuffer,NTP_PACKET_SIZE);
+    Udp.endPacket(); 
+}
+
+void maj_heure(){
+    int heures = (epoch  % 86400L) / 3600;
+    if ( heures < 10 )sprintf(tmp,"0%0d",heures); else sprintf(tmp,"%0d",heures);
+    HHMMSS[0]=tmp[0]; HHMMSS[1]=tmp[1];
+    int minutes = (epoch  % 3600) / 60;
+    if ( minutes < 10 ) sprintf(tmp,"0%0d",minutes); else  sprintf(tmp,"%0d",minutes);
+    HHMMSS[3]=tmp[0]; HHMMSS[4]=tmp[1];
+    int secondes = epoch % 60;
+    if ( secondes < 10 ) sprintf(tmp,"0%0d",secondes); else sprintf(tmp,"%0d",secondes);
+    HHMMSS[6]=tmp[0];HHMMSS[7]=tmp[1];
+    int daysSince2012=(epoch -epoch2012)/24/60/60 + 1;
+    int yearsSince2012 = 0;
+    int daysSinceLastYear;
+    while(daysSince2012 > 0){
+      daysSinceLastYear = daysSince2012;
+      if( yearsSince2012 % 4 == 0)daysSince2012 = daysSince2012 - 366;
+      else daysSince2012 = daysSince2012 - 365;
+      yearsSince2012++;
+    }
+    year = 2012 + yearsSince2012 - 1;
+    month = -1;
+    int daysSinceLastMonth;
+    for(int ii = 0; ii < 12 ; ii++){
+      daysSinceLastMonth = daysSinceLastYear;
+      daysSinceLastYear = daysSinceLastYear - monthDays[ii];
+      if(ii == 1 && year%4 == 0)daysSinceLastYear--;
+      if(daysSinceLastYear <= 0 ){
+        month = ii + 1;
+        day = daysSinceLastMonth;
+        break;
+      }
+    }
+    return;
+    
+}
+
+int level_ligth_alarm(int i, int code){
+    int hour = (epoch  % 86400L) / 3600;
+    if( day_no < 1 | day_no > 5)return level_ligth_alarm_night(i,code);
+    else{
+      if( hour < 7 | hour > 20)return level_ligth_alarm_night(i,code);
+    }
+    return hits_alarms_log(i,-1);
+}
+
+int level_ligth_alarm_night(int i, int code){
+  if(last_push + 60 < epoch){
+    // lumière s'allume
+    last_push = epoch;
+    start_ligth  = last_push;
+  }else{
+    last_push = epoch;
+    if( last_push - start_ligth > 600){ //lumiere allumee depuis + de 10 minutes
+      start_ligth  = epoch; // alerte + on repart pour 10 minutes
+      return hits_alarms_log(i,code); // flag alerte lumière!!!
+    }
+  }
+  return hits_alarms_log(i,-1); // moins de 10 minutes d'allumage, flag pas d'alerte
+}
+
+int is_flood_alarm(int i,int code){
+    if(epoch - alarmes[i].start > 600){
+      // début période d'audit
+      alarmes[i].hit = 1;
+      alarmes[i].start = epoch;
+      return hits_alarms_log(i,-1);
+    }else{
+      if( alarmes[i].hit > 0 ){ // autrement période de blocage des messages d'alerte
+        alarmes[i].hit++;
+        if( epoch - alarmes[i].start < 60 ){
+            // audit en cours
+           if( alarmes[i].hit > 20){
+             // densité de hits atteinte
+             alarmes[i].hit=0; // pour attendre 10 minutes pour le prochaine message d'alerte
+             return hits_alarms_log(i,code);
+           }
+        }else{ // pas suffisamment de hits, redébut période d'audit
+           alarmes[i].start=epoch; // 
+           alarmes[i].hit = 1;
+           return hits_alarms_log(i,-1);
+        }
+      }
+    }
+    return 0;
+}
+
+int hits_alarms_log(int i,int code){
+  #if debug == 1
+     Serial.print("3;");Serial.print(i);Serial.print(";");Serial.println(code);
+  #endif
+  if( receiverStatus) {
+    Udp.beginPacket(udpReceiver,remPort);
+    if( day < 10) { Udp.print("0"); Udp.print(day);}
+    else Udp.print(day);
+    Udp.print("-");
+    if(month < 10 ){ Udp.print("0"); Udp.print(month);}
+    else Udp.print(month);
+    Udp.print(" ");
+    Udp.print(String(HHMMSS));
+    Udp.print(" ");
+    Udp.print("hit=");
+    Udp.print(i);
+    Udp.print(" ");
+    Udp.print("alarm=");
+    Udp.print(code);
+    Udp.endPacket();
+  }
+  if(alarmes[i].type == START_TYPE) return 0;   
+  if(code > -1){
+    if(code == 1)displayLED(B00111000); /// alarme lumières couloir = L
+    if(code == 2)displayLED(B01111001); /// alarme inondation = E
+    if(code == 3)displayLED(B01111100); /// alarme sirène de bureau/cave = b
+
+
+    datastreamsAlarm[0].setFloat(code);
+    int ret = cosmclient.put(feedAlarm, cosmKeyAlarm);
+    if(ret != 200 ){
+      #if debug == 1
+      Serial.print("0Error : Return code on alarm = :");Serial.println(ret);
+      #endif
+      return -1;
+    }
+  }
+  if(code = -1)displayLED(ledCharSet[i]); // numéro du sensor activé
+  datastreamsLog[0].setFloat(i);
+  int ret = cosmclient.put(feedLog, cosmKeyLog);
+  if(ret != 200 ){
+    #if debug == 1
+    Serial.print("0Error : Return code on hits = :");Serial.println(ret);
+    #endif
+    return -1;
+  }
+   return 0;
+}
+void displayLED(byte code ){
+    digitalWrite(LATCH,LOW); // Blocage des sorties du 74HC595
+    shiftOut(DATA,CLOCK,MSBFIRST,~code); // Décalage d'un chiffre
+    digitalWrite(LATCH,HIGH); // Transfert du chiffre décalé en sortie
+    lastDisplay=millis();
+}
+
+void resetHour(){
+    DNSClient dnsClient;
+    IPAddress dnsIP(192,168,1,1);
+    dnsClient.begin(dnsIP);
+    int err = dnsClient.getHostByName("time.nist.gov",timeServer);
+    if( err== 0)resetFunc();
+    Udp.begin(localPort);
+    sendNTPpacket(timeServer); // send an NTP packet to a time server
+    delay(1000);  
+    while(!Udp.parsePacket() ) {
+      count++; if(count > 10000) resetFunc();
+    };
+    Udp.read(packetBuffer,NTP_PACKET_SIZE);  // read the packet into the buffer
+    unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
+    unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);  
+    unsigned long secsSince1900 = highWord << 16 | lowWord + 7200;
+    #if debug == 1  
+    Serial.print("0;Unix time is ");
+    #endif
+    const unsigned long seventyYears = 2208988800UL;     
+    epoch = secsSince1900 - seventyYears;
+    #if debug == 1
+    Serial.println(epoch);
+    #endif
+    day_no = (epoch/86400L + 4)%7;
+    #if debug == 1
+    Serial.print("0;day number is ");Serial.println(day_no); 
+    Serial.print("0;it is now ");
+    #endif
+    maj_heure();
+    if(year < 2013)resetFunc();
+    #if debug == 1
+    Serial.print(day); Serial.print("-"); Serial.print(month); Serial.print("-"); Serial.print(year); Serial.print(" ");
+    Serial.println(String(HHMMSS));
+    #endif
+}
+
+void okResetFunc(){
+    // lumière : verifier pas d'analyse d'alarmes potentielles en cours
+    int hour = (epoch  % 86400L) / 3600;
+    if( (day_no < 1 | day_no > 5)/*week-end*/ | (hour < 7 | hour > 20)/*nuit*/){
+      if(epoch - last_push <= 60 )return; // analyse en cours, attendre
+    }
+     // sirène & inondation : verifier pas d'analyse d'alarmes potentielles en cours
+    for(int i = 0 ; i < 16 ; i++ ) {
+      if(alarmes[i].type ==  FLOOD_TYPE ){
+        if(epoch - alarmes[i].start <= 600)return;
+      }
+    }
+    resetFunc();
+}
