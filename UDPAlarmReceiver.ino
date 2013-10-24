@@ -1,3 +1,6 @@
+/*
+  Autheur : Claude Glowacki
+*/
 #define debug 0
 #define localip 0    // 0:nicstte.no-ip.org 1:192.168.1.177
 #include <SPI.h>
