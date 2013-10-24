@@ -102,8 +102,8 @@ volatile long lastAck;
 volatile long lastDisplay;
 volatile long count;
 
-// Définition des segments à allumer pour
-// afficher les chiffres de 0 à 9
+// DÃ©finition des segments Ã  allumer pour
+// afficher les chiffres de 0 Ã  9
 
 const byte ledCharSet[10] = {
   B00111111,B00000110,B01011011,
@@ -134,7 +134,7 @@ void setup() {
     alarmes[15].flag = TO_SEND;
     attachInterrupt(1,interruption,CHANGE); // 1 -> interrupt sur PIN 3
     delay(1000);
-    lastCheck=millis();
+    lastCheck = millis();
 }
 
 void loop() {
@@ -270,14 +270,14 @@ int level_ligth_alarm(int i, int code){
 
 int level_ligth_alarm_night(int i, int code){
   if(last_push + 60 < epoch){
-    // lumière s'allume
+    // lumiÃ¨re s'allume
     last_push = epoch;
     start_ligth  = last_push;
   }else{
     last_push = epoch;
     if( last_push - start_ligth > 600){ //lumiere allumee depuis + de 10 minutes
       start_ligth  = epoch; // alerte + on repart pour 10 minutes
-      return hits_alarms_log(i,code); // flag alerte lumière!!!
+      return hits_alarms_log(i,code); // flag alerte lumiÃ¨re!!!
     }
   }
   return hits_alarms_log(i,-1); // moins de 10 minutes d'allumage, flag pas d'alerte
@@ -285,21 +285,21 @@ int level_ligth_alarm_night(int i, int code){
 
 int is_flood_alarm(int i,int code){
     if(epoch - alarmes[i].start > 600){
-      // début période d'audit
+      // dÃ©but pÃ©riode d'audit
       alarmes[i].hit = 1;
       alarmes[i].start = epoch;
       return hits_alarms_log(i,-1);
     }else{
-      if( alarmes[i].hit > 0 ){ // autrement période de blocage des messages d'alerte
+      if( alarmes[i].hit > 0 ){ // autrement pÃ©riode de blocage des messages d'alerte
         alarmes[i].hit++;
         if( epoch - alarmes[i].start < 60 ){
             // audit en cours
            if( alarmes[i].hit > 20){
-             // densité de hits atteinte
+             // densitÃ© de hits atteinte
              alarmes[i].hit=0; // pour attendre 10 minutes pour le prochaine message d'alerte
              return hits_alarms_log(i,code);
            }
-        }else{ // pas suffisamment de hits, redébut période d'audit
+        }else{ // pas suffisamment de hits, redÃ©but pÃ©riode d'audit
            alarmes[i].start=epoch; // 
            alarmes[i].hit = 1;
            return hits_alarms_log(i,-1);
@@ -332,9 +332,9 @@ int hits_alarms_log(int i,int code){
   }
   if(alarmes[i].type == START_TYPE) return 0;   
   if(code > -1){
-    if(code == 1)displayLED(B00111000); /// alarme lumières couloir = L
+    if(code == 1)displayLED(B00111000); /// alarme lumiÃ¨res couloir = L
     if(code == 2)displayLED(B01111001); /// alarme inondation = E
-    if(code == 3)displayLED(B01111100); /// alarme sirène de bureau/cave = b
+    if(code == 3)displayLED(B01111100); /// alarme sirÃ¨ne de bureau/cave = b
 
 
     datastreamsAlarm[0].setFloat(code);
@@ -346,7 +346,7 @@ int hits_alarms_log(int i,int code){
       return -1;
     }
   }
-  if(code = -1)displayLED(ledCharSet[i]); // numéro du sensor activé
+  if(code = -1)displayLED(ledCharSet[i]); // numÃ©ro du sensor activÃ©
   datastreamsLog[0].setFloat(i);
   int ret = cosmclient.put(feedLog, cosmKeyLog);
   if(ret != 200 ){
@@ -359,8 +359,8 @@ int hits_alarms_log(int i,int code){
 }
 void displayLED(byte code ){
     digitalWrite(LATCH,LOW); // Blocage des sorties du 74HC595
-    shiftOut(DATA,CLOCK,MSBFIRST,~code); // Décalage d'un chiffre
-    digitalWrite(LATCH,HIGH); // Transfert du chiffre décalé en sortie
+    shiftOut(DATA,CLOCK,MSBFIRST,~code); // DÃ©calage d'un chiffre
+    digitalWrite(LATCH,HIGH); // Transfert du chiffre dÃ©calÃ© en sortie
     lastDisplay=millis();
 }
 
@@ -402,12 +402,12 @@ void resetHour(){
 }
 
 void okResetFunc(){
-    // lumière : verifier pas d'analyse d'alarmes potentielles en cours
+    // lumiÃ¨re : verifier pas d'analyse d'alarmes potentielles en cours
     int hour = (epoch  % 86400L) / 3600;
     if( (day_no < 1 | day_no > 5)/*week-end*/ | (hour < 7 | hour > 20)/*nuit*/){
       if(epoch - last_push <= 60 )return; // analyse en cours, attendre
     }
-     // sirène & inondation : verifier pas d'analyse d'alarmes potentielles en cours
+     // sirÃ¨ne & inondation : verifier pas d'analyse d'alarmes potentielles en cours
     for(int i = 0 ; i < 16 ; i++ ) {
       if(alarmes[i].type ==  FLOOD_TYPE ){
         if(epoch - alarmes[i].start <= 600)return;
